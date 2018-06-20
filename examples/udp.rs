@@ -5,14 +5,14 @@ extern crate cortex_m;
 #[macro_use]
 extern crate cortex_m_rt;
 extern crate cortex_m_semihosting;
-#[macro_use]
+// #[macro_use]
 extern crate stm32f429 as board;
 extern crate stm32_eth as eth;
 extern crate smoltcp;
 extern crate log;
 extern crate panic_semihosting;
 
-use cortex_m::asm;
+// use cortex_m::asm;
 use board::{Peripherals, CorePeripherals, SYST};
 
 use core::cell::RefCell;
@@ -24,9 +24,10 @@ use cortex_m_semihosting::hio;
 
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr,
-                    Ipv4Address};
+                    IpEndpoint, Ipv4Address};
 use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder};
-use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
+use smoltcp::socket::{SocketSet, UdpSocket, UdpSocketBuffer};
+use smoltcp::storage::PacketMetadata;
 use log::{Record, Level, Metadata, LevelFilter};
 
 use eth::{Eth, RingEntry};
@@ -50,10 +51,7 @@ impl log::Log for HioLogger {
     fn flush(&self) {}
 }
 
-const SRC_MAC: [u8; 6] = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-
 static TIME: Mutex<RefCell<u64>> = Mutex::new(RefCell::new(0));
-static ETH_PENDING: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 entry!(main);
 
@@ -71,70 +69,59 @@ fn main() -> ! {
     writeln!(stdout, "Enabling ethernet...").unwrap();
     eth::setup(&p);
     let mut rx_ring: [RingEntry<_>; 8] = Default::default();
-    let mut tx_ring: [RingEntry<_>; 2] = Default::default();
+    let mut tx_ring: [RingEntry<_>; 4] = Default::default();
     let mut eth = Eth::new(
         p.ETHERNET_MAC, p.ETHERNET_DMA,
         &mut rx_ring[..], &mut tx_ring[..]
     );
-    eth.enable_interrupt(&mut cp.NVIC);
+    // eth.enable_interrupt(&mut cp.NVIC);
 
     let local_addr = Ipv4Address::new(192, 168, 1, 120);
     let ip_addr = IpCidr::new(IpAddress::from(local_addr), 24);
     let mut ip_addrs = [ip_addr];
     let mut neighbor_storage = [None; 16];
     let neighbor_cache = NeighborCache::new(&mut neighbor_storage[..]);
-    let ethernet_addr = EthernetAddress(SRC_MAC);
+    let serial: u32 = unsafe {
+        *(0x1FFF_7A10 as *const u32) ^
+        *(0x1FFF_7A14 as *const u32) ^
+        *(0x1FFF_7A18 as *const u32)
+    };
+    let ethernet_addr = EthernetAddress([
+        0x46, 0x52, 0x4d,  // F R M
+        (serial >> 16) as u8, (serial >> 8) as u8, serial as u8
+    ]);
     let mut iface = EthernetInterfaceBuilder::new(&mut eth)
         .ethernet_addr(ethernet_addr)
         .ip_addrs(&mut ip_addrs[..])
         .neighbor_cache(neighbor_cache)
         .finalize();
 
-    let mut server_rx_buffer = [0; 2048];
-    let mut server_tx_buffer = [0; 2048];
-    let server_socket = TcpSocket::new(
-        TcpSocketBuffer::new(&mut server_rx_buffer[..]),
-        TcpSocketBuffer::new(&mut server_tx_buffer[..])
+    let mut rx_meta_buffer = [PacketMetadata::EMPTY; 1];
+    let mut tx_meta_buffer = [PacketMetadata::EMPTY; 4];
+    let mut rx_data_buffer = [0; 1500];
+    let mut tx_data_buffer = [0; 1500*4];
+    let mut udp_socket = UdpSocket::new(
+        UdpSocketBuffer::new(&mut rx_meta_buffer[..], &mut rx_data_buffer[..]),
+        UdpSocketBuffer::new(&mut tx_meta_buffer[..], &mut tx_data_buffer[..])
     );
-    let mut sockets_storage = [None, None];
+    udp_socket.bind((IpAddress::v4(192, 168, 1, 120), 50000)).unwrap();
+    let mut sockets_storage = [None];
     let mut sockets = SocketSet::new(&mut sockets_storage[..]);
-    let server_handle = sockets.add(server_socket);
+    let handle = sockets.add(udp_socket);
+    let target = IpEndpoint { addr: IpAddress::v4(192, 168, 1, 1), port: 12345 };
 
-    writeln!(stdout, "Ready, listening at {}", ip_addr).unwrap();
+    writeln!(stdout, "Ready").unwrap();
+    let mut nn = 0u32;
     loop {
-        let time: u64 = cortex_m::interrupt::free(|cs| *TIME.borrow(cs).borrow());
-        cortex_m::interrupt::free(|cs| {
-            *ETH_PENDING.borrow(cs).borrow_mut() = false;
-        });
-        match iface.poll(&mut sockets, Instant::from_millis(time as i64)) {
-            Ok(true) => {
-                let mut socket = sockets.get::<TcpSocket>(server_handle);
-                if !socket.is_open() {
-                    socket.listen(80)
-                        .or_else(|e| writeln!(stdout, "TCP listen error: {:?}", e))
-                        .unwrap();
-                }
-
-                if socket.can_send() {
-                    write!(socket, "hello\n")
-                        .map(|_| { socket.close(); })
-                        .or_else(|e| writeln!(stdout, "TCP send error: {:?}", e))
-                        .unwrap();
-                }
-            },
-            Ok(false) => {
-                // Sleep if no ethernet work is pending
-                cortex_m::interrupt::free(|cs| {
-                    if !*ETH_PENDING.borrow(cs).borrow() {
-                        asm::wfi();
-                        // Awaken by interrupt
-                    }
-                });
-            },
-            Err(e) =>
-                // Ignore malformed packets
-                writeln!(stdout, "Error: {:?}", e).unwrap(),
+        while let Ok(buf) = sockets.get::<UdpSocket>(handle).send(1400, target) {
+            buf[0] = (nn >> 24) as u8;
+            buf[1] = (nn >> 16) as u8;
+            buf[2] = (nn >> 8) as u8;
+            buf[3] = nn as u8;
+            nn = (nn + 1) % (10*1024);
         }
+        let time = cortex_m::interrupt::free(|cs| *TIME.borrow(cs).borrow());
+        let _ = iface.poll(&mut sockets, Instant::from_millis(time as i64));
     }
 }
 
@@ -144,23 +131,11 @@ fn setup_systick(syst: &mut SYST) {
     syst.enable_interrupt();
 }
 
+exception!(SysTick, systick_interrupt_handler);
+
 fn systick_interrupt_handler() {
     cortex_m::interrupt::free(|cs| *TIME.borrow(cs).borrow_mut() += 1);
 }
-
-exception!(SysTick, systick_interrupt_handler);
-
-fn eth_interrupt_handler() {
-    let p = unsafe { Peripherals::steal() };
-
-    // Notify main loop
-    cortex_m::interrupt::free(|cs| *ETH_PENDING.borrow(cs).borrow_mut() = true);
-
-    // Clear interrupt flags
-    eth::eth_interrupt_handler(&p.ETHERNET_DMA);
-}
-
-interrupt!(ETH, eth_interrupt_handler);
 
 exception!(HardFault, hard_fault);
 

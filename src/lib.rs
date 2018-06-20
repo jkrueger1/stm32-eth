@@ -110,7 +110,7 @@ impl<'rx, 'tx> Eth<'rx, 'tx> {
         self.reset_dma_and_wait();
 
         // set clock range in MAC MII address register
-        let clock_range = ETH_MACMIIAR_CR_HCLK_DIV_16;
+        let clock_range = ETH_MACMIIAR_CR_HCLK_DIV_102;
         self.eth_mac.macmiiar.modify(|_, w| unsafe { w.cr().bits(clock_range) });
 
         self.get_phy()

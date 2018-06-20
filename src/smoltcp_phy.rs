@@ -2,7 +2,7 @@ use core::intrinsics::transmute;
 use core::ops::Deref;
 use smoltcp::Error;
 use smoltcp::time::Instant;
-use smoltcp::phy::{DeviceCapabilities, Device, RxToken, TxToken};
+use smoltcp::phy::{DeviceCapabilities, Device, RxToken, TxToken, ChecksumCapabilities};
 use Eth;
 use rx::RxPacket;
 use tx::TxError;
@@ -14,7 +14,13 @@ impl<'a, 'rx, 'tx, 'b> Device<'a> for &'b mut Eth<'rx, 'tx> {
     type TxToken = EthTxToken<'a>;
 
     fn capabilities(&self) -> DeviceCapabilities {
-        DeviceCapabilities::default()
+        let checksum = ChecksumCapabilities::default();
+        // checksum.ipv4 = Checksum::Tx;
+        // checksum.udp = Checksum::Tx;
+        // checksum.tcp = Checksum::Tx;
+        let mut capabilities = DeviceCapabilities::default();
+        capabilities.checksum = checksum;
+        capabilities
     }
 
     fn receive(&mut self) -> Option<(Self::RxToken, Self::TxToken)> {

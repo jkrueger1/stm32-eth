@@ -22,7 +22,7 @@ impl<'a> SMI<'a> {
 
     #[cfg(feature = "target-stm32f429")]
     fn read_data(&self) -> u16 {
-        self.macmiidr.read().md().bits()
+        self.macmiidr.read().td().bits()
     }
 
     #[cfg(feature = "target-stm32f7x9")]
@@ -50,7 +50,7 @@ impl<'a> SMI<'a> {
     #[cfg(feature = "target-stm32f429")]
     fn write_data(&self, data: u16) {
         self.macmiidr.write(|w| {
-            unsafe { w.md().bits(data) }
+            unsafe { w.td().bits(data) }
         });
     }
 

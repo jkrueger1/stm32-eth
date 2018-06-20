@@ -1,5 +1,9 @@
 target remote :3333
 
+define hook-quit
+   set confirm off
+end
+
 # print demangled symbols by default
 set print asm-demangle on
 
@@ -18,4 +22,5 @@ monitor arm semihosting enable
 # monitor itm port 0 on
 
 load
-step
+#step
+continue

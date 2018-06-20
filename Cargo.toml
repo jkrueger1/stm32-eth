@@ -10,15 +10,15 @@ travis-ci = { repository = "astro/stm32-eth", branch = "master" }
 maintenance = { status = "experimental" }
 
 [dependencies]
-cortex-m-semihosting = "0.2.0"
+cortex-m-semihosting = "0.3"
 volatile-register = "0.2.0"
 aligned = "0.1.1"
 bare-metal = { version = "0.1.2", optional = true }
 
-stm32f429 = { git = "https://github.com/jmesmon/stm32f429.git", branch = "master", features = ["rt"], optional = true }
-stm32f7x9 = { git = "https://github.com/astro/stm32f7xx.git", branch = "update-cortex-m-rt", features = ["rt"], optional = true }
+stm32f429 = { git = "https://github.com/birkenfeld/stm32f429.git", branch = "master", features = ["rt"], optional = true }
 
-smoltcp = { git = "https://github.com/m-labs/smoltcp.git", default-features = false, features = ["proto-ipv4", "proto-ipv6", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
+smoltcp = { git = "https://github.com/m-labs/smoltcp.git", rev = "216c393", default-features = false, features = ["proto-ipv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
+#smoltcp = { path = "smoltcp", default-features = false, features = ["proto-ipv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
 log = { version = "0.4.1", optional = true }
 
 [features]
@@ -27,16 +27,19 @@ default = []
 
 # Targets
 target-stm32f429 = ["stm32f429"]
-target-stm32f7x9 = ["stm32f7x9", "bare-metal"]
 
 [dev-dependencies]
-cortex-m = "0.4.3"
-cortex-m-rt = { version = "0.4.0" }
-panic-itm = "0.1.0"
+cortex-m = { version = "0.5", features = ["const-fn"] }
+cortex-m-rt = { version = "0.5.0", features = [] }
+panic-semihosting = "0.2.0"
 
 [[example]]
 name = "pktgen"
 required-features = ["target-stm32f429"]
+
+[[example]]
+name = "udp"
+required-features = ["target-stm32f429", "smoltcp-phy"]
 
 [[example]]
 name = "ip"
