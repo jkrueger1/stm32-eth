@@ -16,7 +16,7 @@ bare-metal = { version = "0.1.2", optional = true }
 stm32f429 = { git = "https://github.com/birkenfeld/stm32f429.git", branch = "master", features = ["rt"], optional = true }
 
 #smoltcp = { git = "https://github.com/m-labs/smoltcp.git", rev = "216c393", default-features = false, features = ["proto-ipv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
-smoltcp = { path = "../smoltcp", default-features = false, features = ["proto-ipv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
+smoltcp = { path = "../smoltcp", default-features = false, features = ["proto-ipv4", "proto-dhcpv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"], optional = true }
 log = { version = "0.4.1", optional = true }
 
 [features]
