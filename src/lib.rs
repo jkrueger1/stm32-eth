@@ -1,6 +1,6 @@
 #![no_std]
 
-extern crate cortex_m_semihosting;
+//extern crate cortex_m_semihosting;
 extern crate volatile_register;
 extern crate aligned;
 
