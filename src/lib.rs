@@ -1,15 +1,9 @@
 #![no_std]
 
-//extern crate cortex_m_semihosting;
 extern crate volatile_register;
 extern crate aligned;
-
-#[cfg(feature = "target-stm32f429")]
 extern crate stm32f429 as board;
-#[cfg(feature = "target-stm32f7x9")]
-extern crate stm32f7x9 as board;
-#[cfg(feature = "target-stm32f7x9")]
-extern crate bare_metal;
+extern crate smoltcp;
 
 use board::*;
 
@@ -28,29 +22,8 @@ pub use self::tx::TxError;
 mod setup;
 pub use self::setup::setup;
 
-#[cfg(feature = "smoltcp-phy")]
-extern crate smoltcp;
-#[cfg(feature = "smoltcp-phy")]
 mod smoltcp_phy;
-#[cfg(feature = "smoltcp-phy")]
 pub use smoltcp_phy::{EthRxToken, EthTxToken};
-
-#[cfg(feature = "target-stm32f7x9")]
-pub mod interrupt {
-    use bare_metal::Nr;
-
-    /// Missing in the `stm32f7x9` crate
-    #[derive(Debug, Clone, Copy)]
-    pub enum Interrupt {
-        ETH = 61
-    }
-
-    unsafe impl Nr for Interrupt {
-        fn nr(&self) -> u8 {
-            *self as u8
-        }
-    }
-}
 
 const PHY_ADDR: u8 = 0;
 /// From the datasheet: *VLAN Frame maxsize = 1522*
@@ -206,10 +179,7 @@ impl<'rx, 'tx> Eth<'rx, 'tx> {
         );
 
         // Enable ethernet interrupts
-        #[cfg(feature = "target-stm32f429")]
         let interrupt = Interrupt::ETH;
-        #[cfg(feature = "target-stm32f7x9")]
-        let interrupt = interrupt::Interrupt::ETH;
 
         nvic.enable(interrupt);
     }

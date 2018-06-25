@@ -128,7 +128,7 @@ fn main() -> ! {
                     info!("got start message");
                     target = Some(ep);
                     seq_number = 0;
-                } else if msg == b"stop " {
+                } else if msg == b"stop" {
                     info!("got stop message");
                     target = None;
                 }
