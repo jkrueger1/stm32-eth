@@ -1,35 +1,31 @@
 #![no_main]
 #![no_std]
+#![feature(cell_update)]
 
+#[macro_use]
+extern crate log;
 #[macro_use]
 extern crate cortex_m;
 #[macro_use]
 extern crate cortex_m_rt;
 extern crate stm32f429 as board;
 extern crate stm32_eth as eth;
-extern crate smoltcp;
-#[macro_use]
-extern crate log;
 extern crate panic_itm;
+extern crate smoltcp;
 
+use core::cell::Cell;
 use board::{Peripherals, CorePeripherals, SYST};
-
-use core::cell::RefCell;
+use log::{Record, Level, Metadata, LevelFilter};
 use cortex_m::interrupt::{self, Mutex};
-// use cortex_m::asm;
+use cortex_m::peripheral;
 use cortex_m_rt::ExceptionFrame;
-
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
 use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder, Routes};
 use smoltcp::socket::{SocketSet, UdpSocket, UdpSocketBuffer, RawSocketBuffer};
 use smoltcp::storage::PacketMetadata;
 use smoltcp::dhcp::Dhcpv4Client;
-use log::{Record, Level, Metadata, LevelFilter};
-
 use eth::{Eth, RingEntry};
-
-static mut LOGGER: ItmLogger = ItmLogger;
 
 struct ItmLogger;
 
@@ -40,45 +36,38 @@ impl log::Log for ItmLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let mut cp = unsafe { CorePeripherals::steal() };
-            iprintln!(&mut cp.ITM.stim[0], "[{}] {}", record.level(), record.args());
+            let stim = unsafe { &mut (*peripheral::ITM::ptr()).stim[0] };
+            iprintln!(stim, "[{}] {}", record.level(), record.args());
         }
     }
 
     fn flush(&self) {}
 }
 
-static TIME: Mutex<RefCell<u64>> = Mutex::new(RefCell::new(0));
+static LOGGER: ItmLogger = ItmLogger;
+static ETH_TIME: Mutex<Cell<i64>> = Mutex::new(Cell::new(0));
 
 entry!(main);
 
 fn main() -> ! {
-    unsafe { log::set_logger(&LOGGER).unwrap(); }
-    log::set_max_level(LevelFilter::Debug);
+    log::set_logger(&LOGGER).unwrap();
+    log::set_max_level(LevelFilter::Info);
 
     let p = Peripherals::take().unwrap();
     let mut cp = CorePeripherals::take().unwrap();
 
+    setup_clock(&p);
     setup_systick(&mut cp.SYST);
-
     eth::setup(&p);
+
     let mut rx_ring: [RingEntry<_>; 16] = Default::default();
     let mut tx_ring: [RingEntry<_>; 4] = Default::default();
     let mut eth = Eth::new(
         p.ETHERNET_MAC, p.ETHERNET_DMA,
         &mut rx_ring[..], &mut tx_ring[..]
     );
-    // eth.enable_interrupt(&mut cp.NVIC);
 
-    // enable RNG
-    p.RCC.ahb2enr.modify(|_, w| w.rngen().set_bit());
-    p.RNG.cr.modify(|_, w| w.rngen().set_bit());
-
-    let serial: u32 = unsafe {
-        *(0x1FFF_7A10 as *const u32) ^
-        *(0x1FFF_7A14 as *const u32) ^
-        *(0x1FFF_7A18 as *const u32)
-    };
+    let serial = read_serno();
     let ethernet_addr = EthernetAddress([
         0x46, 0x52, 0x4d,  // F R M
         (serial >> 16) as u8, (serial >> 8) as u8, serial as u8
@@ -120,7 +109,6 @@ fn main() -> ! {
 
     info!("------------------------------------------------------------------------");
     loop {
-        //let random = p.RNG.dr.read().bits();
         {
             let mut socket = sockets.get::<UdpSocket>(udp_handle);
             while let Ok((msg, ep)) = socket.recv() {
@@ -143,7 +131,7 @@ fn main() -> ! {
                 }
             }
         }
-        let time = Instant::from_millis(interrupt::free(|cs| *TIME.borrow(cs).borrow() as i64));
+        let time = Instant::from_millis(interrupt::free(|cs| ETH_TIME.borrow(cs).get()));
         if let Err(e) = iface.poll(&mut sockets, time) {
             warn!("poll: {}", e);
         }
@@ -161,6 +149,46 @@ fn main() -> ! {
     }
 }
 
+fn read_serno() -> u32 {
+    unsafe {
+        *(0x1FFF_7A10 as *const u32) ^
+        *(0x1FFF_7A14 as *const u32) ^
+        *(0x1FFF_7A18 as *const u32)
+    }
+}
+
+fn setup_clock(p: &Peripherals) {
+    // setup for 168 MHz, 84 MHz, 42 MHz
+    let pll_n_bits = 336;
+    let hpre_bits = 0b111;
+    let ppre2_bits = 0b100;
+    let ppre1_bits = 0b101;
+
+    // adjust flash wait states
+    p.FLASH.acr.modify(|_, w| unsafe { w.latency().bits(0b110) });
+
+    // use PLL as source
+    p.RCC.pllcfgr.modify(|_, w| unsafe { w.plln().bits(pll_n_bits as u16) });
+
+    // enable PLL
+    p.RCC.cr.modify(|_, w| w.pllon().set_bit());
+    // wait for PLL ready
+    while p.RCC.cr.read().pllrdy().bit_is_clear() {}
+
+    // enable PLL
+    p.RCC.cfgr.write(|w| unsafe { w
+                                  // APB high-speed prescaler (APB2)
+                                  .ppre2().bits(ppre2_bits)
+                                  // APB Low speed prescaler (APB1)
+                                  .ppre1().bits(ppre1_bits)
+                                  // AHB prescaler
+                                  .hpre().bits(hpre_bits)
+                                  // System clock switch
+                                  // PLL selected as system clock
+                                  .sw1().bit(true)
+                                  .sw0().bit(false) });
+}
+
 fn setup_systick(syst: &mut SYST) {
     syst.set_reload(SYST::get_ticks_per_10ms() / 10);
     syst.enable_counter();
@@ -170,7 +198,7 @@ fn setup_systick(syst: &mut SYST) {
 exception!(SysTick, systick_interrupt_handler);
 
 fn systick_interrupt_handler() {
-    interrupt::free(|cs| *TIME.borrow(cs).borrow_mut() += 1);
+    interrupt::free(|cs| ETH_TIME.borrow(cs).update(|v| v.wrapping_add(1)));
 }
 
 exception!(HardFault, hard_fault);

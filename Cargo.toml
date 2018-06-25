@@ -10,13 +10,14 @@ log = "0.4.1"
 aligned = "0.1.1"
 panic-itm = "0.2"
 cortex-m-rt = "0.5.0"
-cortex-m = { version = "0.5", features = ["const-fn"] }
+byteorder = { version = "1.2", default-features = false }
+cortex-m = { version = "0.5", features = ["const-fn", "inline-asm"] }
+arraydeque = { version = "0.4", default-features = false }
+arrayvec = { version = "0.4", default-features = false }
+btoi = { version = "0.3", default-features = false }
 volatile-register = "0.2.0"
 stm32f429 = { git = "https://github.com/birkenfeld/stm32f429.git", features = ["rt"] }
 smoltcp = { git = "https://github.com/birkenfeld/smoltcp", default-features = false, features = ["proto-ipv4", "proto-dhcpv4", "socket-icmp", "socket-udp", "socket-tcp", "log", "verbose"] }
-
-[[bin]]
-name = "seqgen"
 
 [profile.release]
 debug = 2

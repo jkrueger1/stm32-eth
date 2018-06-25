@@ -12,40 +12,6 @@ use self::consts::*;
 /// Initialize GPIO pins. Enable syscfg and ethernet clocks. Reset the
 /// Ethernet MAC.
 pub fn setup(p: &Peripherals) {
-    let pll_n_bits = 336;
-    let hpre_bits = 0b111;
-    let ppre2_bits = 0b100;
-    let ppre1_bits = 0b101;
-
-    // adjust flash wait states
-    p.FLASH.acr.modify(|_, w| unsafe { w.latency().bits(0b110) });
-
-    // use PLL as source
-    p.RCC.pllcfgr.modify(|_, w| unsafe { w.plln().bits(pll_n_bits as u16) });
-
-    // Enable PLL
-    p.RCC.cr.modify(|_, w| w.pllon().set_bit());
-    // Wait for PLL ready
-    while p.RCC.cr.read().pllrdy().bit_is_clear() {}
-
-    // enable PLL
-    p.RCC.cfgr.write(|w| unsafe {
-                w
-                    // APB high-speed prescaler (APB2)
-                    .ppre2()
-                    .bits(ppre2_bits)
-                    // APB Low speed prescaler (APB1)
-                    .ppre1()
-                    .bits(ppre1_bits)
-                    // AHB prescaler
-                    .hpre()
-                    .bits(hpre_bits)
-                    // System clock switch
-                    // PLL selected as system clock
-                    .sw1().bit(true)
-                    .sw0().bit(false)
-            });
-
     init_pins(&p.RCC, &p.GPIOA, &p.GPIOB, &p.GPIOC, &p.GPIOG);
 
     // enable syscfg clock
