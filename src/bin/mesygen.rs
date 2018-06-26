@@ -8,22 +8,17 @@ extern crate log;
 extern crate cortex_m;
 #[macro_use]
 extern crate cortex_m_rt;
-#[macro_use]
 extern crate stm32f429 as board;
 extern crate stm32_eth as eth;
 extern crate panic_itm;
 extern crate smoltcp;
-extern crate arraydeque;
 extern crate arrayvec;
 extern crate byteorder;
-extern crate btoi;
 
-use core::cell::{Cell, RefCell};
-use arraydeque::ArrayDeque;
+use core::cell::Cell;
 use arrayvec::ArrayVec;
-use btoi::btoi;
 use byteorder::{ByteOrder, LE};
-use board::{Peripherals, CorePeripherals, Interrupt, SYST};
+use board::{Peripherals, CorePeripherals, SYST};
 use log::{Record, Level, Metadata, LevelFilter};
 use cortex_m::peripheral;
 use cortex_m::interrupt::{self, Mutex};
@@ -57,11 +52,6 @@ impl log::Log for ItmLogger {
 
 static LOGGER: ItmLogger = ItmLogger;
 static ETH_TIME: Mutex<Cell<i64>> = Mutex::new(Cell::new(0));
-static RXBUF: Mutex<RefCell<Option<ArrayDeque<[u8; 64]>>>> = Mutex::new(RefCell::new(None));
-
-fn with_fifo<T>(f: impl FnOnce(&mut ArrayDeque<[u8; 64]>) -> T) -> T {
-    interrupt::free(|cs| f(RXBUF.borrow(cs).borrow_mut().get_or_insert_with(ArrayDeque::new)))
-}
 
 entry!(main);
 
@@ -74,7 +64,6 @@ fn main() -> ! {
 
     setup_clock(&p);
     setup_systick(&mut cp.SYST);
-    setup_usart3(&p, &mut cp);
     setup_rng(&p);
     setup_10mhz(&p);
     eth::setup(&p);
@@ -123,26 +112,12 @@ fn main() -> ! {
 
     let udp_handle = sockets.add(udp_socket);
     let mut setup_done = false;
-    let mut cmd = ArrayVec::<[u8; 64]>::new();
     let mut cmd_buf = [0; 128];
 
     let mut gen = Generator::new(p.TIM2);
 
     info!("------------------------------------------------------------------------");
     loop {
-        // process serial commands
-        if with_fifo(|f| if f.back() == Some(&b'\n') {
-            cmd.clear(); cmd.extend(f.drain(..)); true
-        } else { false }) {
-            let mut args = cmd[..cmd.len()-2].split(|&v| v == b' ');
-            match (args.next(), args.next().and_then(|v| btoi::<u32>(v).ok())) {
-                (Some(b"rate"), Some(rate)) => {
-                    gen.interval = 10_000_000 / rate;
-                    info!("UART: interval set to {}", gen.interval);
-                }
-                _ => {}
-            }
-        }
         // process packets
         {
             let mut socket = sockets.get::<UdpSocket>(udp_handle);
@@ -235,6 +210,7 @@ impl Generator {
             }
             1 | 3 => { // start or continue DAQ
                 if self.endpoint.addr.is_unspecified() {
+                    // to avoid needing reconfiguration of the IP all the time
                     self.endpoint = ep;
                 }
                 self.start();
@@ -296,13 +272,17 @@ impl Generator {
             }
             19 => { // read MCPD-8 serial string
             }
+            0xF1F0 => { // generator parameters
+                self.interval = 10_000_000 / ((req_body[1] as u32) << 16 | req_body[0] as u32);
+                info!("Configure: set interval to {}", self.interval);
+            }
             _ => { // unknown
                 return;
             }
         }
         body.push(0xffff);
         if let Ok(buf) = sock.send(20 + 2*body.len(), ep) {
-            LE::write_u16(&mut buf[0..], (9 + body.len()) as u16);
+            LE::write_u16(&mut buf[0..], (10 + body.len()) as u16);
             buf[2..18].copy_from_slice(&msg[2..18]);
             buf[18..20].copy_from_slice(&[0, 0]);
             for (i, val) in body.into_iter().enumerate() {
@@ -417,30 +397,6 @@ fn setup_systick(syst: &mut SYST) {
     syst.enable_interrupt();
 }
 
-fn setup_usart3(p: &Peripherals, cp: &mut CorePeripherals) {
-    // enable pins
-    p.RCC.ahb1enr.modify(|_, w| w.gpioden().set_bit());
-    p.RCC.ahb1rstr.modify(|_, w| w.gpiodrst().set_bit());
-    p.RCC.ahb1rstr.modify(|_, w| w.gpiodrst().clear_bit());
-    p.GPIOD.moder.modify(|_, w| unsafe { w.moder8().bits(0b10).moder9().bits(0b10) });
-    p.GPIOD.afrh.modify(|_, w| unsafe { w.afrh8().bits(7).afrh9().bits(7) });
-
-    // enable and reset UART
-    p.RCC.apb1enr.modify(|_, w| w.usart3en().set_bit());
-    p.RCC.apb1rstr.modify(|_, w| w.uart3rst().set_bit());
-    p.RCC.apb1rstr.modify(|_, w| w.uart3rst().clear_bit());
-
-    // 115k2 baudrate
-    p.USART3.brr.write(|w| unsafe { w.bits(364) });
-    p.USART3.cr1.write(|w| w.ue().set_bit()
-                            .re().set_bit()
-                            .te().set_bit()
-                            .rxneie().set_bit());
-
-    // enable interrupt
-    cp.NVIC.enable(Interrupt::USART3);
-}
-
 fn setup_rng(p: &Peripherals) {
     p.RCC.ahb2enr.modify(|_, w| w.rngen().set_bit());
     p.RNG.cr.modify(|_, w| w.rngen().set_bit());
@@ -464,14 +420,6 @@ fn read_rand() -> u32 {
     unsafe {
         (*board::RNG::ptr()).dr.read().bits()
     }
-}
-
-interrupt!(USART3, uart_receive);
-
-fn uart_receive() {
-    let usart3 = unsafe { &(*board::USART3::ptr()) };
-    let data =  usart3.dr.read().bits() as u8;
-    with_fifo(|f| { let _ = f.push_back(data); });
 }
 
 exception!(SysTick, systick);
