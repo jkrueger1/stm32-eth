@@ -69,7 +69,7 @@ fn main() -> ! {
     eth::setup(&p);
 
     let mut rx_ring: [RingEntry<_>; 16] = Default::default();
-    let mut tx_ring: [RingEntry<_>; 4] = Default::default();
+    let mut tx_ring: [RingEntry<_>; 16] = Default::default();
     let mut eth = Eth::new(
         p.ETHERNET_MAC, p.ETHERNET_DMA,
         &mut rx_ring[..], &mut tx_ring[..]
@@ -91,9 +91,9 @@ fn main() -> ! {
         .finalize();
 
     let mut udp_rx_meta_buffer = [PacketMetadata::EMPTY; 4];
-    let mut udp_tx_meta_buffer = [PacketMetadata::EMPTY; 4];
+    let mut udp_tx_meta_buffer = [PacketMetadata::EMPTY; 16];
     let mut udp_rx_data_buffer = [0; 1500*4];
-    let mut udp_tx_data_buffer = [0; 1500*4];
+    let mut udp_tx_data_buffer = [0; 1500*16];
     let mut dhcp_rx_meta_buffer = [PacketMetadata::EMPTY; 1];
     let mut dhcp_tx_meta_buffer = [PacketMetadata::EMPTY; 1];
     let mut dhcp_rx_data_buffer = [0; 1500];
@@ -346,7 +346,6 @@ impl Generator {
                         let mut evtime = 0;
                         for n in 0..nevents {
                             let random = read_rand();
-                            evtime += random >> 20;
                             let mut y = (random >> 22) as u16;
                             if y > 959 { y -= 960; }
                             LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
@@ -354,6 +353,7 @@ impl Generator {
                                           y << 3 | (evtime >> 16) as u16 & 0b111);
                             LE::write_u16(&mut buf[42+6*n+4..],
                                           (random as u16 & 0b11100111) << 7);
+                            evtime += random >> 20;
                         }
                     }
                     Err(e) => warn!("send: {}", e),

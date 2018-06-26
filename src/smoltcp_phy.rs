@@ -19,6 +19,7 @@ impl<'a, 'rx, 'tx, 'b> Device<'a> for &'b mut Eth<'rx, 'tx> {
         // checksum.udp = Checksum::Tx;
         // checksum.tcp = Checksum::Tx;
         let mut capabilities = DeviceCapabilities::default();
+        capabilities.max_transmission_unit = 1500;
         capabilities.checksum = checksum;
         capabilities
     }
