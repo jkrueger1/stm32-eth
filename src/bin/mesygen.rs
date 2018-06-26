@@ -160,29 +160,35 @@ struct Generator {
 
 impl Generator {
     fn new(timer: board::TIM2) -> Self {
-        Generator { timer, mcpd_id: 0, run_id: 0, interval: 100_000, buf_no: 0,
+        // default rate: 1000 events/sec
+        Generator { timer, mcpd_id: 0, run_id: 0, interval: 10_000, buf_no: 0,
                     endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
                     last: 0, overflow: 0, run: false }
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
-        let req_body = msg[20..].chunks(2).map(|c| LE::read_u16(c)).collect::<ArrayVec<[u16; 32]>>();
+        let req_body = msg[20..].chunks(2).map(|c| LE::read_u16(c))
+                                          .take_while(|&v| v != 0xffff)
+                                          .collect::<ArrayVec<[u16; 32]>>();
         let mut body = ArrayVec::<[u16; 24]>::new();
         let cmd = LE::read_u16(&msg[8..]);
-        info!("CMD: {}", cmd);
         match cmd {
             22 => { // get MCPD-8 capabilities and mode
-                body.push(7); body.push(2);
+                info!("Get capabilities: {:?}", req_body);
+                body.push(7); body.push(2);  // TOF + Pos/Amp selected
             }
-            23 => { // set MCPD-8 bus mode
-                body.push(2);
+            23 => { // set MCPD-8 mode
+                info!("Set bus mode: {:?}", req_body);
+                body.push(2);  // TOF + Pos/Amp selected
             }
             31 => { // write MCPD register
+                info!("Write MCPD register: {:?}", req_body);
                 if req_body[0] == 1 && req_body[1] == 103 {
                     body.push(1); body.push(103); body.push(2);
                 }
             }
             32 => { // read MCPD register
+                info!("Read MCPD register: {:?}", req_body);
                 if req_body[0] == 1 && req_body[1] == 102 {
                     body.push(1); body.push(102); body.push(2);
                 } else if req_body[0] == 1 && req_body[1] == 103 {
@@ -190,12 +196,15 @@ impl Generator {
                 }
             }
             36 => { // get hw_types
+                info!("Get hardware types");
                 for _ in 0..8 { body.push(103); }
             }
             51 => { // get version information
+                info!("Get version information");
                 body.push(3); body.push(4); body.push(0x0102);
             }
             52 => { // read MPSD-8 register
+                info!("Read MPSD register: {:?}", req_body);
                 body.push(req_body[0]);
                 body.push(req_body[1]);
                 body.push(match req_body[1] {
@@ -206,9 +215,11 @@ impl Generator {
                 });
             }
             0 | 2 => { // reset or stop DAQ
+                info!("Stopped");
                 self.stop();
             }
             1 | 3 => { // start or continue DAQ
+                info!("Started");
                 if self.endpoint.addr.is_unspecified() {
                     // to avoid needing reconfiguration of the IP all the time
                     self.endpoint = ep;
@@ -219,13 +230,14 @@ impl Generator {
                 info!("MCPD id set to {}", req_body[0]);
             }
             5 => { // set protocol parameters
+                info!("Set protocol parameters");
                 if req_body[0] != 0 {
-                    info!("requested IP change to {}.{}.{}.{}",
+                    info!("  requested IP change to {}.{}.{}.{}",
                           req_body[0], req_body[1], req_body[2], req_body[3]);
                 }
                 if req_body[4] != 0 {
                     let port = if req_body[9] != 0 { req_body[9] } else { 54321 };
-                    info!("Events should go to {}.{}.{}.{}:{}",
+                    info!("  events should go to {}.{}.{}.{}:{}",
                           req_body[4], req_body[5], req_body[6], req_body[7], port);
                     self.endpoint = (IpAddress::v4(req_body[4] as u8,
                                                    req_body[5] as u8,
@@ -233,19 +245,20 @@ impl Generator {
                                                    req_body[7] as u8), port).into();
                 }
                 if req_body[4] == 0 && req_body[5] == 0 {
-                    info!("Events should go to sender");
+                    info!("  events should go to sender");
                     self.endpoint = ep;
                 }
                 if req_body[10] != 0 {
-                    info!("Accept commands only from {}.{}.{}.{}:{}",
+                    info!("  accept commands only from {}.{}.{}.{}:{}",
                           req_body[10], req_body[11], req_body[12], req_body[13],
                           if req_body[8] != 0 { req_body[8] } else { 54321 });
                 }
                 if req_body[10] == 0 && req_body[11] == 0 {
-                    info!("Accept commands only from sender");
+                    info!("  accept commands only from sender");
                 }
             }
             6 => { // set timing setup
+                info!("Set timing setup: {:?}", req_body);
             }
             7 => { // set master clock value
                 info!("Master clock is {}",
@@ -253,12 +266,16 @@ impl Generator {
             }
             8 => { // set run ID
                 self.run_id = req_body[0];
+                info!("Run ID set to {}", self.run_id);
             }
             9 => { // set counter cells
+                info!("Set counter cells: {:?}", req_body);
             }
             10 => { // set aux timer
+                info!("Set aux timer: {:?}", req_body);
             }
             11 => { // set parameter source
+                info!("Set param source: {:?}", req_body);
             }
             12 => { // get all parameters
                 info!("CMD 12 not implemented, returning zeros");
@@ -266,17 +283,18 @@ impl Generator {
                     body.push(0);
                 }
             }
-            17 => { // set DAC
-            }
-            18 => { // send MCPD-8 serial string
-            }
-            19 => { // read MCPD-8 serial string
-            }
+            // 17 => { // set DAC
+            // }
+            // 18 => { // send MCPD-8 serial string
+            // }
+            // 19 => { // read MCPD-8 serial string
+            // }
             0xF1F0 => { // generator parameters
                 self.interval = 10_000_000 / ((req_body[1] as u32) << 16 | req_body[0] as u32);
                 info!("Configure: set interval to {}", self.interval);
             }
             _ => { // unknown
+                info!("CMD {} not handled...", cmd);
                 return;
             }
         }
@@ -331,11 +349,11 @@ impl Generator {
                             evtime += random >> 20;
                             let mut y = (random >> 22) as u16;
                             if y > 959 { y -= 960; }
-                            LE::write_u16(&mut buf[42+6*n..], evtime as u16);
-                            LE::write_u16(&mut buf[44+6*n..],
+                            LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
+                            LE::write_u16(&mut buf[42+6*n+2..],
                                           y << 3 | (evtime >> 16) as u16 & 0b111);
-                            LE::write_u16(&mut buf[46+6*n..],
-                                          (random as u16 & 0b11111111) << 7);
+                            LE::write_u16(&mut buf[42+6*n+4..],
+                                          (random as u16 & 0b11100111) << 7);
                         }
                     }
                     Err(e) => warn!("send: {}", e),
