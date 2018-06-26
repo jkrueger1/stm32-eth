@@ -377,35 +377,60 @@ impl Generator {
 }
 
 fn setup_clock(p: &Peripherals) {
-    // setup for 168 MHz, 84 MHz, 42 MHz
-    let pll_n_bits = 336;
-    let hpre_bits = 0b111;
-    let ppre2_bits = 0b100;
-    let ppre1_bits = 0b101;
+    // setup for 180 MHz, 90 MHz, 45 MHz from 8MHz HSE (Nucleo MCO)
+    let pll_m = 8;
+    let pll_n = 360; // fVCO = 360 MHz
+    let pll_p = 2;
+    let pll_q = 8; // to get <= 48 MHz
+    let flash_latency = 5;
+    let ahb_div  = 0b111;
+    let apb2_div = 0b100; // div2
+    let apb1_div = 0b101; // div4
 
-    // adjust flash wait states
-    p.FLASH.acr.modify(|_, w| unsafe { w.latency().bits(0b110) });
+    // enable HSE
+    p.RCC.cr.modify(|_, w| w.hseon().set_bit());
+    while p.RCC.cr.read().hserdy().bit_is_clear() {}
 
-    // use PLL as source
-    p.RCC.pllcfgr.modify(|_, w| unsafe { w.plln().bits(pll_n_bits as u16) });
+    // select regulator voltage scale 1
+    p.RCC.apb1enr.modify(|_, w| w.pwren().set_bit());
+    p.PWR.cr.modify(|_, w| unsafe { w.vos().bits(0b11) });
+
+    // configure PLL frequency
+    p.RCC.pllcfgr.modify(|_, w| unsafe { w.pllm().bits(pll_m)
+                                          .plln().bits(pll_n)
+                                          .pllp().bits((pll_p >> 1) - 1)
+                                          .pllq().bits(pll_q)
+                                          .pllsrc().set_bit() });
 
     // enable PLL
     p.RCC.cr.modify(|_, w| w.pllon().set_bit());
     // wait for PLL ready
     while p.RCC.cr.read().pllrdy().bit_is_clear() {}
 
+    // enable overdrive
+    p.PWR.cr.modify(|_, w| w.oden().set_bit());
+    while p.PWR.csr.read().odrdy().bit_is_clear() {}
+    p.PWR.cr.modify(|_, w| w.odswen().set_bit());
+    while p.PWR.csr.read().odswrdy().bit_is_clear() {}
+
+    // adjust icache and flash wait states
+    p.FLASH.acr.modify(|_, w| unsafe { w.icen().set_bit()
+                                        .dcen().set_bit()
+                                        .prften().set_bit()
+                                        .latency().bits(flash_latency) });
+
     // enable PLL as clock source
     p.RCC.cfgr.write(|w| unsafe { w
                                   // APB high-speed prescaler (APB2)
-                                  .ppre2().bits(ppre2_bits)
-                                  // APB Low speed prescaler (APB1)
-                                  .ppre1().bits(ppre1_bits)
+                                  .ppre2().bits(apb2_div)
+                                  // APB low-speed prescaler (APB1)
+                                  .ppre1().bits(apb1_div)
                                   // AHB prescaler
-                                  .hpre().bits(hpre_bits)
-                                  // System clock switch
+                                  .hpre().bits(ahb_div)
                                   // PLL selected as system clock
                                   .sw1().bit(true)
                                   .sw0().bit(false) });
+    while p.RCC.cfgr.read().sws1().bit_is_clear() {}
 }
 
 fn setup_systick(syst: &mut SYST) {
@@ -421,7 +446,7 @@ fn setup_rng(p: &Peripherals) {
 
 fn setup_10mhz(p: &Peripherals) {
     p.RCC.apb1enr.modify(|_, w| w.tim2en().set_bit());
-    p.TIM2.psc.write(|w| unsafe { w.psc().bits(7) }); // 84 MHz/8
+    p.TIM2.psc.write(|w| unsafe { w.psc().bits(8) }); // 90 MHz/9
     p.TIM2.egr.write(|w| w.ug().set_bit());
 }
 
