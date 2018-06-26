@@ -146,11 +146,13 @@ fn main() -> ! {
 }
 
 struct Generator {
+    endpoint: IpEndpoint,
     timer: board::TIM2,
+
     mcpd_id: u8,
     run_id: u16,
     interval: u32, // 10MHz times between events
-    endpoint: IpEndpoint,
+    minpkt: u32,   // minimum number of events per packet
 
     buf_no: u16,
     run: bool,
@@ -161,9 +163,9 @@ struct Generator {
 impl Generator {
     fn new(timer: board::TIM2) -> Self {
         // default rate: 1000 events/sec
-        Generator { timer, mcpd_id: 0, run_id: 0, interval: 10_000, buf_no: 0,
-                    endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
-                    last: 0, overflow: 0, run: false }
+        Generator { timer, endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
+                    mcpd_id: 0, run_id: 0, interval: 10_000, minpkt: 10,
+                    buf_no: 0, last: 0, overflow: 0, run: false }
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
@@ -283,15 +285,12 @@ impl Generator {
                     body.push(0);
                 }
             }
-            // 17 => { // set DAC
-            // }
-            // 18 => { // send MCPD-8 serial string
-            // }
-            // 19 => { // read MCPD-8 serial string
-            // }
             0xF1F0 => { // generator parameters
-                self.interval = 10_000_000 / ((req_body[1] as u32) << 16 | req_body[0] as u32);
-                info!("Configure: set interval to {}", self.interval);
+                let rate = (req_body[1] as u32) << 16 | req_body[0] as u32;
+                self.interval = 10_000_000 / rate;
+                self.minpkt = req_body[2] as u32;
+                info!("Configure: set rate to {}/s, min events/packet to {}",
+                      rate, self.minpkt);
             }
             _ => { // unknown
                 info!("CMD {} not handled...", cmd);
@@ -314,52 +313,51 @@ impl Generator {
     }
 
     fn maybe_send_data(&mut self, sock: &mut UdpSocket) {
-        if self.run {
-            let time = self.timer.cnt.read().bits();
-            if time < self.last as u32 {
-                self.overflow += 1;
-            }
-            let time = (self.overflow as u64) << 32 | time as u64;
-            let elapsed = (time - self.last) as u32;
-            let mut nevents = (elapsed / self.interval) as usize;
-            // info!("elapsed: {}, nevents: {}", elapsed, nevents);
-            if nevents > 0 {
-                if nevents > 220 {
-                    // info!("too many events for single packet, ratelimiting...");
-                    nevents = 220;
+        if !self.run {
+            return;
+        }
+        let time = self.timer.cnt.read().bits();
+        if time < self.last as u32 {
+            self.overflow += 1;
+        }
+        let time = (self.overflow as u64) << 32 | time as u64;
+        let elapsed = (time - self.last) as u32;
+        if elapsed < self.minpkt * self.interval {
+            return;
+        }
+        let mut nevents = (elapsed / self.interval) as usize;
+        if nevents > 220 {
+            info!("too many events for single packet, limiting...");
+            nevents = 220;
+        }
+        match sock.send(42 + 6*nevents, self.endpoint) {
+            Ok(buf) => {
+                self.buf_no += 1;
+                LE::write_u16(&mut buf[0..], 21 + 3*nevents as u16);
+                LE::write_u16(&mut buf[2..], 0);
+                LE::write_u16(&mut buf[4..], 21);
+                LE::write_u16(&mut buf[6..], self.buf_no);
+                LE::write_u16(&mut buf[8..], self.run_id);
+                buf[10] = 1;
+                buf[11] = self.mcpd_id;
+                LE::write_u16(&mut buf[12..], time as u16);
+                LE::write_u16(&mut buf[14..], (time >> 16) as u16);
+                LE::write_u16(&mut buf[16..], (time >> 32) as u16);
+                let mut evtime = 0;
+                for n in 0..nevents {
+                    let random = read_rand();
+                    let mut y = (random >> 22) as u16;
+                    if y > 959 { y -= 960; }
+                    LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
+                    LE::write_u16(&mut buf[42+6*n+2..],
+                                  y << 3 | (evtime >> 16) as u16 & 0b111);
+                    LE::write_u16(&mut buf[42+6*n+4..],
+                                  (random as u16 & 0b11100111) << 7);
+                    evtime += random >> 20;
                 }
-                let size = 42 + 6*nevents as usize;
-                match sock.send(size, self.endpoint) {
-                    Ok(buf) => {
-                        // info!("sending a data packet with {} events", nevents);
-                        self.buf_no += 1;
-                        LE::write_u16(&mut buf[0..], (size as u16)/2);
-                        LE::write_u16(&mut buf[2..], 0);
-                        LE::write_u16(&mut buf[4..], 21);
-                        LE::write_u16(&mut buf[6..], self.buf_no);
-                        LE::write_u16(&mut buf[8..], self.run_id);
-                        buf[10] = 1;
-                        buf[11] = self.mcpd_id;
-                        LE::write_u16(&mut buf[12..], time as u16);
-                        LE::write_u16(&mut buf[14..], (time >> 16) as u16);
-                        LE::write_u16(&mut buf[16..], (time >> 32) as u16);
-                        let mut evtime = 0;
-                        for n in 0..nevents {
-                            let random = read_rand();
-                            let mut y = (random >> 22) as u16;
-                            if y > 959 { y -= 960; }
-                            LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
-                            LE::write_u16(&mut buf[42+6*n+2..],
-                                          y << 3 | (evtime >> 16) as u16 & 0b111);
-                            LE::write_u16(&mut buf[42+6*n+4..],
-                                          (random as u16 & 0b11100111) << 7);
-                            evtime += random >> 20;
-                        }
-                    }
-                    Err(e) => warn!("send: {}", e),
-                }
+                self.last = time - (elapsed % self.interval) as u64;
             }
-            self.last = time - (elapsed % self.interval) as u64;
+            Err(e) => warn!("send: {}", e),
         }
     }
 
@@ -367,6 +365,7 @@ impl Generator {
         self.run = true;
         self.overflow = 0;
         self.last = 0;
+        // reset the timer
         self.timer.cnt.write(|w| unsafe { w.bits(0) });
         self.timer.cr1.write(|w| w.cen().set_bit());
     }

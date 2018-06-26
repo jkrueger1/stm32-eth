@@ -3,12 +3,14 @@ import socket, sys, struct
 try:
     addr = sys.argv[1]
     rate = int(sys.argv[2])
+    minpkt = int(sys.argv[3])
 except (ValueError, IndexError):
-    print 'usage: setparams.py ipaddr rate'
+    print 'usage: setparams.py ipaddr rate minperpacket'
 else:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ndata = 2  # number of words
-    pkt = struct.pack('<HHHHHBBHHHH' + 'I',
+    ndata = 3  # number of words
+    pkt = struct.pack(
+        '<HHHHHBBHHHH' + 'IH',
         10 + ndata,
         0x8000,
         10,
@@ -21,6 +23,7 @@ else:
         0,
         0,
         rate,
+        minpkt,
     )
     s.sendto(pkt, (addr, 54321))
     s.recvfrom(1024)
