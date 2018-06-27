@@ -67,6 +67,11 @@ fn main() -> ! {
     setup_rng(&p);
     setup_10mhz(&p);
     eth::setup(&p);
+    setup_gpio(&p);
+
+    set_leds(true, false, false);
+
+    let use_dhcp = p.GPIOC.idr.read().idr13().bit_is_set();
 
     let mut rx_ring: [RingEntry<_>; 16] = Default::default();
     let mut tx_ring: [RingEntry<_>; 16] = Default::default();
@@ -80,7 +85,11 @@ fn main() -> ! {
         0x46, 0x52, 0x4d,  // F R M
         (serial >> 16) as u8, (serial >> 8) as u8, serial as u8
     ]);
-    let mut ip_addrs = [IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0)];
+    let mut ip_addrs = if use_dhcp {
+        [IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0)]
+    } else {
+        [IpCidr::new(IpAddress::v4(192, 168, 168, 121), 24)]
+    };
     let mut neighbor_storage = [None; 16];
     let mut routes_storage = [None; 2];
     let mut iface = EthernetInterfaceBuilder::new(&mut eth)
@@ -135,9 +144,11 @@ fn main() -> ! {
         if !setup_done {
             let ip_addr = iface.ipv4_addr().unwrap();
             if !ip_addr.is_unspecified() {
-                info!("dhcp done, binding to {}:{}", ip_addr, PORT);
+                info!("IP setup done ({}), binding to {}:{}",
+                      if use_dhcp { "dhcp" } else { "static" }, ip_addr, PORT);
                 sockets.get::<UdpSocket>(udp_handle).bind((ip_addr, PORT)).unwrap();
                 setup_done = true;
+                set_leds(false, true, false);
             } else if let Err(e) = dhcp.poll(&mut iface, &mut sockets, time) {
                 warn!("dhcp: {}", e);
             }
@@ -365,6 +376,7 @@ impl Generator {
         self.run = true;
         self.overflow = 0;
         self.last = 0;
+        set_leds(false, true, true);
         // reset the timer
         self.timer.cnt.write(|w| unsafe { w.bits(0) });
         self.timer.cr1.write(|w| w.cen().set_bit());
@@ -373,6 +385,7 @@ impl Generator {
     fn stop(&mut self) {
         self.run = false;
         self.timer.cr1.write(|w| w.cen().clear_bit());
+        set_leds(false, true, false);
     }
 }
 
@@ -437,6 +450,18 @@ fn setup_systick(syst: &mut SYST) {
     syst.set_reload(SYST::get_ticks_per_10ms() / 10);
     syst.enable_counter();
     syst.enable_interrupt();
+}
+
+fn setup_gpio(p: &Peripherals) {
+    // Set up button and LEDs, clocks already enabled by ethernet
+    p.GPIOC.moder.modify(|_, w| unsafe { w.moder13().bits(0b00) });
+    p.GPIOC.pupdr.modify(|_, w| unsafe { w.pupdr13().bits(0b10) });
+    p.GPIOB.moder.modify(|_, w| unsafe { w.moder0().bits(0b01).moder7().bits(0b01).moder14().bits(0b01) });
+}
+
+fn set_leds(red: bool, green: bool, blue: bool) {
+    let gpiob = unsafe { &(*board::GPIOB::ptr()) };
+    gpiob.odr.modify(|_, w| w.odr0().bit(green).odr7().bit(blue).odr14().bit(red));
 }
 
 fn setup_rng(p: &Peripherals) {
