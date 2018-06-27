@@ -97,18 +97,20 @@ fn main() -> ! {
     );
     let mut sockets_storage = [None, None];
     let mut sockets = SocketSet::new(&mut sockets_storage[..]);
-    let mut target = None;
 
     let dhcp_rx_buffer = RawSocketBuffer::new(&mut dhcp_rx_meta_buffer[..], &mut dhcp_rx_data_buffer[..]);
     let dhcp_tx_buffer = RawSocketBuffer::new(&mut dhcp_tx_meta_buffer[..], &mut dhcp_tx_data_buffer[..]);
     let mut dhcp = Dhcpv4Client::new(&mut sockets, dhcp_rx_buffer, dhcp_tx_buffer, Instant::from_millis(0));
 
     let udp_handle = sockets.add(udp_socket);
-    let mut seq_number = 0u32;
     let mut setup_done = false;
+
+    let mut target = None;
+    let mut seq_number = 0u32;
 
     info!("------------------------------------------------------------------------");
     loop {
+        // process packets
         {
             let mut socket = sockets.get::<UdpSocket>(udp_handle);
             while let Ok((msg, ep)) = socket.recv() {
@@ -131,10 +133,12 @@ fn main() -> ! {
                 }
             }
         }
+        // handle ethernet
         let time = Instant::from_millis(interrupt::free(|cs| ETH_TIME.borrow(cs).get()));
         if let Err(e) = iface.poll(&mut sockets, time) {
             warn!("poll: {}", e);
         }
+        // ethernet setup
         if !setup_done {
             let ip_addr = iface.ipv4_addr().unwrap();
             if !ip_addr.is_unspecified() {
@@ -149,44 +153,61 @@ fn main() -> ! {
     }
 }
 
-fn read_serno() -> u32 {
-    unsafe {
-        *(0x1FFF_7A10 as *const u32) ^
-        *(0x1FFF_7A14 as *const u32) ^
-        *(0x1FFF_7A18 as *const u32)
-    }
-}
-
 fn setup_clock(p: &Peripherals) {
-    // setup for 168 MHz, 84 MHz, 42 MHz
-    let pll_n_bits = 336;
-    let hpre_bits = 0b111;
-    let ppre2_bits = 0b100;
-    let ppre1_bits = 0b101;
+    // setup for 180 MHz, 90 MHz, 45 MHz from 8MHz HSE (Nucleo MCO)
+    let pll_m = 8;
+    let pll_n = 360; // fVCO = 360 MHz
+    let pll_p = 2;
+    let pll_q = 8; // to get <= 48 MHz
+    let flash_latency = 5;
+    let ahb_div  = 0b111;
+    let apb2_div = 0b100; // div2
+    let apb1_div = 0b101; // div4
 
-    // adjust flash wait states
-    p.FLASH.acr.modify(|_, w| unsafe { w.latency().bits(0b110) });
+    // enable HSE
+    p.RCC.cr.modify(|_, w| w.hseon().set_bit());
+    while p.RCC.cr.read().hserdy().bit_is_clear() {}
 
-    // use PLL as source
-    p.RCC.pllcfgr.modify(|_, w| unsafe { w.plln().bits(pll_n_bits as u16) });
+    // select regulator voltage scale 1
+    p.RCC.apb1enr.modify(|_, w| w.pwren().set_bit());
+    p.PWR.cr.modify(|_, w| unsafe { w.vos().bits(0b11) });
+
+    // configure PLL frequency
+    p.RCC.pllcfgr.modify(|_, w| unsafe { w.pllm().bits(pll_m)
+                                          .plln().bits(pll_n)
+                                          .pllp().bits((pll_p >> 1) - 1)
+                                          .pllq().bits(pll_q)
+                                          .pllsrc().set_bit() });
 
     // enable PLL
     p.RCC.cr.modify(|_, w| w.pllon().set_bit());
     // wait for PLL ready
     while p.RCC.cr.read().pllrdy().bit_is_clear() {}
 
-    // enable PLL
+    // enable overdrive
+    p.PWR.cr.modify(|_, w| w.oden().set_bit());
+    while p.PWR.csr.read().odrdy().bit_is_clear() {}
+    p.PWR.cr.modify(|_, w| w.odswen().set_bit());
+    while p.PWR.csr.read().odswrdy().bit_is_clear() {}
+
+    // adjust icache and flash wait states
+    p.FLASH.acr.modify(|_, w| unsafe { w.icen().set_bit()
+                                        .dcen().set_bit()
+                                        .prften().set_bit()
+                                        .latency().bits(flash_latency) });
+
+    // enable PLL as clock source
     p.RCC.cfgr.write(|w| unsafe { w
                                   // APB high-speed prescaler (APB2)
-                                  .ppre2().bits(ppre2_bits)
-                                  // APB Low speed prescaler (APB1)
-                                  .ppre1().bits(ppre1_bits)
+                                  .ppre2().bits(apb2_div)
+                                  // APB low-speed prescaler (APB1)
+                                  .ppre1().bits(apb1_div)
                                   // AHB prescaler
-                                  .hpre().bits(hpre_bits)
-                                  // System clock switch
+                                  .hpre().bits(ahb_div)
                                   // PLL selected as system clock
                                   .sw1().bit(true)
                                   .sw0().bit(false) });
+    while p.RCC.cfgr.read().sws1().bit_is_clear() {}
 }
 
 fn setup_systick(syst: &mut SYST) {
@@ -195,9 +216,17 @@ fn setup_systick(syst: &mut SYST) {
     syst.enable_interrupt();
 }
 
-exception!(SysTick, systick_interrupt_handler);
+fn read_serno() -> u32 {
+    unsafe {
+        *(0x1FFF_7A10 as *const u32) ^
+        *(0x1FFF_7A14 as *const u32) ^
+        *(0x1FFF_7A18 as *const u32)
+    }
+}
 
-fn systick_interrupt_handler() {
+exception!(SysTick, systick);
+
+fn systick() {
     interrupt::free(|cs| ETH_TIME.borrow(cs).update(|v| v.wrapping_add(1)));
 }
 
