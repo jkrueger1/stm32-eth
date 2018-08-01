@@ -359,6 +359,7 @@ impl Generator {
         if elapsed < self.pkt_interval {
             return;
         }
+        self.overflow += overflow as u32;
         let mut nevents = (elapsed / self.interval) as usize;
         if nevents > MAX_PER_PKT {
             info!("too many events for single packet, limiting...");
