@@ -328,14 +328,13 @@ impl Generator {
             return;
         }
         let time = self.timer.cnt.read().bits();
-        if time < self.last as u32 {
-            self.overflow += 1;
-        }
-        let time = (self.overflow as u64) << 32 | time as u64;
+        let overflow = (time < self.last as u32) as u8;
+        let time = (self.overflow as u64 + overflow as u64) << 32 | time as u64;
         let elapsed = (time - self.last) as u32;
         if elapsed < self.minpkt * self.interval {
             return;
         }
+        self.overflow += overflow as u32;
         let mut nevents = (elapsed / self.interval) as usize;
         if nevents > 220 {
             info!("too many events for single packet, limiting...");
