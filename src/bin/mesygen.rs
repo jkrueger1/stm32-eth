@@ -359,15 +359,18 @@ impl Generator {
                 LE::write_u16(&mut buf[16..], (self.time >> 32) as u16);
                 let mut evtime = 0;
                 for n in 0..nevents {
-                    let random = read_rand();
-                    let mut y = (random >> 22) as u16;
-                    if y > 959 { y -= 960; }
+                    let (y, x, dt) = loop {
+                        let random = read_rand();
+                        let y = (random >> 22) as u16;
+                        if y < 960 {
+                            break (y, random as u16 & 0b11100111, random >> 20);
+                        }
+                    };
                     LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
                     LE::write_u16(&mut buf[42+6*n+2..],
                                   y << 3 | (evtime >> 16) as u16 & 0b111);
-                    LE::write_u16(&mut buf[42+6*n+4..],
-                                  (random as u16 & 0b11100111) << 7);
-                    evtime += random >> 20;
+                    LE::write_u16(&mut buf[42+6*n+4..], x << 7);
+                    evtime += dt;
                 }
                 self.lastpkt = self.time - (elapsed % self.interval) as u64;
             }
