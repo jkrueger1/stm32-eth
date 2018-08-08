@@ -70,10 +70,13 @@ fn main() -> ! {
     eth::setup(&p);
     setup_gpio(&p);
 
+    // red LED: indicate "booting"
     set_leds(true, false, false);
 
+    // DHCP if user button pressed
     let use_dhcp = p.GPIOC.idr.read().idr13().bit_is_set();
 
+    // set up ring buffers for network handling tokens
     let mut rx_ring: [RingEntry<_>; 16] = Default::default();
     let mut tx_ring: [RingEntry<_>; 16] = Default::default();
     let mut eth = Eth::new(
@@ -81,15 +84,18 @@ fn main() -> ! {
         &mut rx_ring[..], &mut tx_ring[..]
     );
 
+    // determine MAC address from board's serial number
     let serial = read_serno();
     let ethernet_addr = EthernetAddress([
         0x46, 0x52, 0x4d,  // F R M
         (serial >> 16) as u8, (serial >> 8) as u8, serial as u8
     ]);
-    let mut ip_addrs = if use_dhcp {
-        [IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0)]
-    } else {
+
+    // select the default Mesytec IP if static configuration
+    let mut ip_addrs = if !use_dhcp {
         [IpCidr::new(IpAddress::v4(192, 168, 168, 121), 24)]
+    } else {
+        [IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0)]
     };
     let mut neighbor_storage = [None; 16];
     let mut routes_storage = [None; 2];
@@ -100,6 +106,7 @@ fn main() -> ! {
         .routes(Routes::new(&mut routes_storage[..]))
         .finalize();
 
+    // set up buffers for packet content and metadata
     let mut udp_rx_meta_buffer = [PacketMetadata::EMPTY; 4];
     let mut udp_tx_meta_buffer = [PacketMetadata::EMPTY; 16];
     let mut udp_rx_data_buffer = [0; 1500*4];
@@ -109,6 +116,7 @@ fn main() -> ! {
     let mut dhcp_rx_data_buffer = [0; 1500];
     let mut dhcp_tx_data_buffer = [0; 1500*2];
 
+    // create the UDP socket
     let udp_socket = UdpSocket::new(
         UdpSocketBuffer::new(&mut udp_rx_meta_buffer[..], &mut udp_rx_data_buffer[..]),
         UdpSocketBuffer::new(&mut udp_tx_meta_buffer[..], &mut udp_tx_data_buffer[..])
@@ -116,6 +124,7 @@ fn main() -> ! {
     let mut sockets_storage = [None, None];
     let mut sockets = SocketSet::new(&mut sockets_storage[..]);
 
+    // set up buffers for DHCP handling
     let dhcp_rx_buffer = RawSocketBuffer::new(&mut dhcp_rx_meta_buffer[..], &mut dhcp_rx_data_buffer[..]);
     let dhcp_tx_buffer = RawSocketBuffer::new(&mut dhcp_tx_meta_buffer[..], &mut dhcp_tx_data_buffer[..]);
     let mut dhcp = Dhcpv4Client::new(&mut sockets, dhcp_rx_buffer, dhcp_tx_buffer, Instant::from_millis(0));
@@ -144,11 +153,13 @@ fn main() -> ! {
         // ethernet setup
         if !setup_done {
             let ip_addr = iface.ipv4_addr().unwrap();
+            // setup is done as soon as we have an IP (via DHCP or static)
             if !ip_addr.is_unspecified() {
                 info!("IP setup done ({}), binding to {}:{}",
                       if use_dhcp { "dhcp" } else { "static" }, ip_addr, PORT);
                 sockets.get::<UdpSocket>(udp_handle).bind((ip_addr, PORT)).unwrap();
                 setup_done = true;
+                // green LED: bootup finished
                 set_leds(false, true, false);
             } else if let Err(e) = dhcp.poll(&mut iface, &mut sockets, time) {
                 warn!("dhcp: {}", e);
@@ -181,6 +192,7 @@ impl Generator {
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
+        // parse body: all command buffers end in 0xffff
         let req_body = msg[20..].chunks(2).map(|c| LE::read_u16(c))
                                           .take_while(|&v| v != 0xffff)
                                           .collect::<ArrayVec<[u16; 32]>>();
@@ -297,7 +309,7 @@ impl Generator {
                     body.push(0);
                 }
             }
-            0xF1F0 => { // generator parameters
+            0xF1F0 => { // generator parameters -- generator specific command
                 let rate = (req_body[1] as u32) << 16 | req_body[0] as u32;
                 self.interval = 10_000_000 / rate;
                 self.minpkt = req_body[2] as u32;
@@ -310,6 +322,8 @@ impl Generator {
             }
         }
         body.push(0xffff);
+
+        // send back reply
         if let Ok(buf) = sock.send(20 + 2*body.len(), ep) {
             LE::write_u16(&mut buf[0..], (10 + body.len()) as u16);
             buf[2..18].copy_from_slice(&msg[2..18]);
@@ -344,6 +358,8 @@ impl Generator {
             // info!("too many events for single packet, limiting...");
             nevents = 220;
         }
+
+        // now we can send a packet
         match sock.send(42 + 6*nevents, self.endpoint) {
             Ok(buf) => {
                 self.buf_no += 1;
@@ -382,6 +398,7 @@ impl Generator {
         self.run = true;
         self.time = 0;
         self.lastpkt = 0;
+        // LED blue is "running"
         set_leds(false, true, true);
         // reset the timer
         self.timer.cnt.write(|w| unsafe { w.bits(0) });
@@ -453,6 +470,7 @@ fn setup_clock(p: &Peripherals) {
 }
 
 fn setup_systick(syst: &mut SYST) {
+    // systick is used for advancing the Ethernet clock for timeouts etc.
     syst.set_reload(SYST::get_ticks_per_10ms() / 10);
     syst.enable_counter();
     syst.enable_interrupt();
@@ -490,6 +508,7 @@ fn read_serno() -> u32 {
 }
 
 fn read_rand() -> u32 {
+    // read a random number from the hardware generator
     unsafe {
         (*board::RNG::ptr()).dr.read().bits()
     }
