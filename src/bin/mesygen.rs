@@ -168,8 +168,8 @@ struct Generator {
 
     buf_no: u16,
     run: bool,
-    overflow: u32,
-    last: u64,
+    time: u64,
+    lastpkt: u64,
 }
 
 impl Generator {
@@ -177,7 +177,7 @@ impl Generator {
         // default rate: 1000 events/sec
         Generator { timer, endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
                     mcpd_id: 0, run_id: 0, interval: 10_000, minpkt: 10,
-                    buf_no: 0, last: 0, overflow: 0, run: false }
+                    buf_no: 0, time: 0, lastpkt: 0, run: false }
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
@@ -328,12 +328,14 @@ impl Generator {
         if !self.run {
             return;
         }
-        let time = self.timer.cnt.read().bits();
-        if time < self.last as u32 {
-            self.overflow += 1;
-        }
-        let time = (self.overflow as u64) << 32 | time as u64;
-        let elapsed = (time - self.last) as u32;
+
+        // keep track of 64-bit time
+        let low_time = self.timer.cnt.read().bits();
+        let overflow = if low_time < self.time as u32 { 1 << 32 } else { 0 };
+        self.time = ((self.time & 0xFFFFFFFF00000000) + overflow) | low_time as u64;
+
+        // calculate time since last packet
+        let elapsed = (self.time - self.lastpkt) as u32;
         if elapsed < self.minpkt * self.interval {
             return;
         }
@@ -352,9 +354,9 @@ impl Generator {
                 LE::write_u16(&mut buf[8..], self.run_id);
                 buf[10] = 1;
                 buf[11] = self.mcpd_id;
-                LE::write_u16(&mut buf[12..], time as u16);
-                LE::write_u16(&mut buf[14..], (time >> 16) as u16);
-                LE::write_u16(&mut buf[16..], (time >> 32) as u16);
+                LE::write_u16(&mut buf[12..], self.time as u16);
+                LE::write_u16(&mut buf[14..], (self.time >> 16) as u16);
+                LE::write_u16(&mut buf[16..], (self.time >> 32) as u16);
                 let mut evtime = 0;
                 for n in 0..nevents {
                     let random = read_rand();
@@ -367,7 +369,7 @@ impl Generator {
                                   (random as u16 & 0b11100111) << 7);
                     evtime += random >> 20;
                 }
-                self.last = time - (elapsed % self.interval) as u64;
+                self.lastpkt = self.time - (elapsed % self.interval) as u64;
             }
             Err(e) => warn!("send: {}", e),
         }
@@ -375,8 +377,8 @@ impl Generator {
 
     fn start(&mut self) {
         self.run = true;
-        self.overflow = 0;
-        self.last = 0;
+        self.time = 0;
+        self.lastpkt = 0;
         set_leds(false, true, true);
         // reset the timer
         self.timer.cnt.write(|w| unsafe { w.bits(0) });
