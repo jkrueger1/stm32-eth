@@ -5,7 +5,7 @@ try:
     rate = int(sys.argv[2])
     minpkt = int(sys.argv[3])
 except (ValueError, IndexError):
-    print 'usage: setparams.py ipaddr rate minperpacket'
+    print 'usage: mesyparams.py ipaddr rate minperpacket'
 else:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     ndata = 3  # number of words

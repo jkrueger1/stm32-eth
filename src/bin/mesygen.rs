@@ -181,6 +181,9 @@ struct Generator {
     run: bool,
     time: u64,
     lastpkt: u64,
+    npkt: u32,
+    nevt: u32,
+    npkt_per_size: [u32; 221],
 }
 
 impl Generator {
@@ -188,7 +191,8 @@ impl Generator {
         // default rate: 1000 events/sec
         Generator { timer, endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
                     mcpd_id: 0, run_id: 0, interval: 10_000, minpkt: 10,
-                    buf_no: 0, time: 0, lastpkt: 0, run: false }
+                    buf_no: 0, time: 0, lastpkt: 0, run: false,
+                    npkt: 0, nevt: 0, npkt_per_size: [0; 221] }
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
@@ -312,9 +316,9 @@ impl Generator {
             0xF1F0 => { // generator parameters -- generator specific command
                 let rate = (req_body[1] as u32) << 16 | req_body[0] as u32;
                 self.interval = 10_000_000 / rate;
-                self.minpkt = req_body[2] as u32;
+                self.minpkt = (req_body[2] as u32).min(200);
                 info!("Configure: set rate to {}/s, min events/packet to {}",
-                      rate, self.minpkt);
+                      10_000_000/self.interval, self.minpkt);
             }
             _ => { // unknown
                 info!("CMD {} not handled...", cmd);
@@ -355,7 +359,7 @@ impl Generator {
         }
         let mut nevents = (elapsed / self.interval) as usize;
         if nevents > 220 {
-            // info!("too many events for single packet, limiting...");
+            info!("too many events for single packet, limiting...");
             nevents = 220;
         }
 
@@ -368,27 +372,27 @@ impl Generator {
                 LE::write_u16(&mut buf[4..], 21);
                 LE::write_u16(&mut buf[6..], self.buf_no);
                 LE::write_u16(&mut buf[8..], self.run_id);
-                buf[10] = 1;
+                buf[10] = 1;  // DAQ running
                 buf[11] = self.mcpd_id;
                 LE::write_u16(&mut buf[12..], self.time as u16);
                 LE::write_u16(&mut buf[14..], (self.time >> 16) as u16);
                 LE::write_u16(&mut buf[16..], (self.time >> 32) as u16);
-                let mut evtime = 0;
+                buf[18..42].copy_from_slice(&[0; 24]);
                 for n in 0..nevents {
-                    let (y, x, dt) = loop {
+                    let (y, x) = loop {
                         let random = read_rand();
                         let y = (random >> 22) as u16;
                         if y < 960 {
-                            break (y, random as u16 & 0b11100111, random >> 20);
+                            break (y, random as u16 & 0b11100111);
                         }
                     };
-                    LE::write_u16(&mut buf[42+6*n+0..], evtime as u16);
-                    LE::write_u16(&mut buf[42+6*n+2..],
-                                  y << 3 | (evtime >> 16) as u16 & 0b111);
+                    LE::write_u16(&mut buf[42+6*n+2..], y << 3);
                     LE::write_u16(&mut buf[42+6*n+4..], x << 7);
-                    evtime += dt;
+                    self.nevt += 1;
                 }
                 self.lastpkt = self.time - (elapsed % self.interval) as u64;
+                self.npkt += 1;
+                self.npkt_per_size[nevents as usize] += 1;
             }
             Err(e) => warn!("send: {}", e),
         }
@@ -398,6 +402,9 @@ impl Generator {
         self.run = true;
         self.time = 0;
         self.lastpkt = 0;
+        self.nevt = 0;
+        self.npkt = 0;
+        self.npkt_per_size.iter_mut().for_each(|p| *p = 0);
         // LED blue is "running"
         set_leds(false, true, true);
         // reset the timer
@@ -409,6 +416,14 @@ impl Generator {
         self.run = false;
         self.timer.cr1.write(|w| w.cen().clear_bit());
         set_leds(false, true, false);
+        info!("generated {} pkts, {} evts in {} ticks", self.npkt, self.nevt, self.time);
+        info!("event rate: {:.0}/s", self.nevt as f64 / (self.time as f64 / 10_000_000.));
+        info!("per size:");
+        for (sz, &n) in self.npkt_per_size.iter().enumerate() {
+            if n != 0 {
+                info!("{} - {}", sz, n);
+            }
+        }
     }
 }
 
