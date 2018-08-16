@@ -174,8 +174,8 @@ struct Generator {
 
     mcpd_id: u8,
     run_id: u16,
-    interval: u32, // 10MHz times between events
-    minpkt: u32,   // minimum number of events per packet
+    interval: u32,     // 10MHz times between events
+    pkt_interval: u32, // 10MHz times between packets
 
     buf_no: u16,
     run: bool,
@@ -190,7 +190,7 @@ impl Generator {
     fn new(timer: board::TIM2) -> Self {
         // default rate: 1000 events/sec
         Generator { timer, endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
-                    mcpd_id: 0, run_id: 0, interval: 10_000, minpkt: 10,
+                    mcpd_id: 0, run_id: 0, interval: 10_000, pkt_interval: 100_000,
                     buf_no: 0, time: 0, lastpkt: 0, run: false,
                     npkt: 0, nevt: 0, npkt_per_size: [0; 221] }
     }
@@ -316,9 +316,10 @@ impl Generator {
             0xF1F0 => { // generator parameters -- generator specific command
                 let rate = (req_body[1] as u32) << 16 | req_body[0] as u32;
                 self.interval = 10_000_000 / rate;
-                self.minpkt = (req_body[2] as u32).min(200);
+                let minpkt = (req_body[2] as u32).min(200);
+                self.pkt_interval = self.interval * minpkt;
                 info!("Configure: set rate to {}/s, min events/packet to {}",
-                      10_000_000/self.interval, self.minpkt);
+                      10_000_000 / self.interval, minpkt);
             }
             _ => { // unknown
                 info!("CMD {} not handled...", cmd);
@@ -330,7 +331,10 @@ impl Generator {
         // send back reply
         if let Ok(buf) = sock.send(20 + 2*body.len(), ep) {
             LE::write_u16(&mut buf[0..], (10 + body.len()) as u16);
-            buf[2..18].copy_from_slice(&msg[2..18]);
+            buf[2..12].copy_from_slice(&msg[2..12]);
+            LE::write_u16(&mut buf[12..], self.time as u16);
+            LE::write_u16(&mut buf[14..], (self.time >> 16) as u16);
+            LE::write_u16(&mut buf[16..], (self.time >> 32) as u16);
             buf[18..20].copy_from_slice(&[0, 0]);
             for (i, val) in body.into_iter().enumerate() {
                 LE::write_u16(&mut buf[20+i*2..22+i*2], val);
@@ -354,7 +358,7 @@ impl Generator {
 
         // calculate time since last packet
         let elapsed = (self.time - self.lastpkt) as u32;
-        if elapsed < self.minpkt * self.interval {
+        if elapsed < self.pkt_interval {
             return;
         }
         let mut nevents = (elapsed / self.interval) as usize;

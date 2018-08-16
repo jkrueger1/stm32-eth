@@ -15,7 +15,7 @@ except:
 
 os.system('python mesyparams.py %s %s %s' % (addr, rate, pktsize))
 
-n = [0, 0]
+n = [0, 0, 0]
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.bind(('', 54321))
@@ -26,7 +26,9 @@ def get():
     while True:
         d, _ = s.recvfrom(2000)
         if d[3] == '\x01':
-            continue
+            d = map(ord, d)
+            n[2] = d[12] | (d[13] << 8) | (d[14] << 16) | (d[15] << 24) | (d[16] << 32) | (d[17] << 40)
+            return
         n[0] += 1
         blen = ord(d[0]) | (ord(d[1]) << 8)
         n[1] += (blen - 21) / 3
@@ -36,5 +38,5 @@ t.setDaemon(True)
 t.start()
 time.sleep(dt)
 s.sendto('\x00\x00\x00\x01' + '\x00' * 16, (addr, 54321))
-time.sleep(0.1)
-print 'got:', n[0], 'packets with', n[1], 'events =>', n[1]/dt, 'ev/s'
+t.join()
+print 'got: %s packets with %s events => %.0f ev/s [set: %.0f]' % (n[0], n[1], n[1]/(n[2] / 1e7), 10000000//(10000000//rate))

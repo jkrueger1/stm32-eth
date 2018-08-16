@@ -27,4 +27,4 @@ else:
     )
     s.sendto(pkt, (addr, 54321))
     s.recvfrom(1024)
-    print 'ok'
+    print 'configure ok'
