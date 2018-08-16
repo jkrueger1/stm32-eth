@@ -32,6 +32,7 @@ use smoltcp::dhcp::Dhcpv4Client;
 use eth::{Eth, RingEntry};
 
 const PORT: u16 = 54321;
+const MAX_PER_PKT: usize = 220;
 
 struct ItmLogger;
 
@@ -181,9 +182,7 @@ struct Generator {
     run: bool,
     time: u64,
     lastpkt: u64,
-    npkt: u32,
-    nevt: u32,
-    npkt_per_size: [u32; 221],
+    npkt: [u32; MAX_PER_PKT+1],
 }
 
 impl Generator {
@@ -191,8 +190,7 @@ impl Generator {
         // default rate: 1000 events/sec
         Generator { timer, endpoint: (IpAddress::v4(0, 0, 0, 0), PORT).into(),
                     mcpd_id: 0, run_id: 0, interval: 10_000, pkt_interval: 100_000,
-                    buf_no: 0, time: 0, lastpkt: 0, run: false,
-                    npkt: 0, nevt: 0, npkt_per_size: [0; 221] }
+                    buf_no: 0, time: 0, lastpkt: 0, run: false, npkt: [0; MAX_PER_PKT+1] }
     }
 
     fn process_command(&mut self, sock: &mut UdpSocket, msg: &[u8], ep: IpEndpoint) {
@@ -362,9 +360,9 @@ impl Generator {
             return;
         }
         let mut nevents = (elapsed / self.interval) as usize;
-        if nevents > 220 {
+        if nevents > MAX_PER_PKT {
             info!("too many events for single packet, limiting...");
-            nevents = 220;
+            nevents = MAX_PER_PKT;
         }
 
         // now we can send a packet
@@ -392,11 +390,9 @@ impl Generator {
                     };
                     LE::write_u16(&mut buf[42+6*n+2..], y << 3);
                     LE::write_u16(&mut buf[42+6*n+4..], x << 7);
-                    self.nevt += 1;
                 }
                 self.lastpkt = self.time - (elapsed % self.interval) as u64;
-                self.npkt += 1;
-                self.npkt_per_size[nevents as usize] += 1;
+                self.npkt[nevents] += 1;
             }
             Err(e) => warn!("send: {}", e),
         }
@@ -406,9 +402,7 @@ impl Generator {
         self.run = true;
         self.time = 0;
         self.lastpkt = 0;
-        self.nevt = 0;
-        self.npkt = 0;
-        self.npkt_per_size.iter_mut().for_each(|p| *p = 0);
+        self.npkt.iter_mut().for_each(|p| *p = 0);
         // LED blue is "running"
         set_leds(false, true, true);
         // reset the timer
@@ -420,10 +414,12 @@ impl Generator {
         self.run = false;
         self.timer.cr1.write(|w| w.cen().clear_bit());
         set_leds(false, true, false);
-        info!("generated {} pkts, {} evts in {} ticks", self.npkt, self.nevt, self.time);
-        info!("event rate: {:.0}/s", self.nevt as f64 / (self.time as f64 / 10_000_000.));
+        let npkt = self.npkt.iter().sum::<u32>();
+        let nevt = self.npkt.iter().enumerate().map(|(i, &n)| i as u64 * n as u64).sum::<u64>();
+        info!("generated {} pkts, {} evts in {} ticks", npkt, nevt, self.time);
+        info!("event rate: {:.0}/s", nevt as f64 / (self.time as f64 / 10_000_000.));
         info!("per size:");
-        for (sz, &n) in self.npkt_per_size.iter().enumerate() {
+        for (sz, &n) in self.npkt.iter().enumerate() {
             if n != 0 {
                 info!("{} - {}", sz, n);
             }
