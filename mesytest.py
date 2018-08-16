@@ -39,4 +39,5 @@ t.start()
 time.sleep(dt)
 s.sendto('\x00\x00\x00\x01' + '\x00' * 16, (addr, 54321))
 t.join()
-print 'got: %s packets with %s events => %.0f ev/s [set: %.0f]' % (n[0], n[1], n[1]/(n[2] / 1e7), 10000000//(10000000//rate))
+print 'got: %s packets with %s events => %.0f ev/s [set: %.0f], %.0f ev/pkt' % \
+    (n[0], n[1], n[1]/(n[2] / 1e7), 10000000//(10000000//rate), n[1]/float(n[0]))
