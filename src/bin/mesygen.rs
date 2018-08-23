@@ -313,9 +313,17 @@ impl Generator {
             }
             0xF1F0 => { // generator parameters -- generator specific command
                 let rate = (req_body[1] as u32) << 16 | req_body[0] as u32;
-                self.interval = 10_000_000 / rate;
-                let minpkt = (req_body[2] as u32).min(200);
+                if rate == 0 {
+                    self.interval = 400000;
+                }
+                else {
+                    self.interval = 10_000_000 / rate;
+                }
+                let minpkt = MAX_PER_PKT as u32; // (req_body[2] as u32).min(MAX_PER_PKT);
                 self.pkt_interval = self.interval * minpkt;
+                if self.pkt_interval > 200000 {
+                    self.pkt_interval = 200000;
+                }
                 info!("Configure: set rate to {}/s, min events/packet to {}",
                       10_000_000 / self.interval, minpkt);
             }
